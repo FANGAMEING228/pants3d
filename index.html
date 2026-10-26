@@ -1,0 +1,744 @@
+
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, maximum-scale=1.0">
+<title>⚡ Pantograph 3D VR (Quest 3)</title>
+<style>
+  html,body{margin:0;padding:0;overflow:hidden;background:#0a1028;font-family:"Segoe UI",Arial,sans-serif;color:#fff;}
+  canvas{display:block;}
+
+  #info{
+    position:fixed;top:14px;left:14px;z-index:10;user-select:none;
+    background:rgba(0,0,0,0.55);padding:14px 18px;border-radius:12px;
+    backdrop-filter:blur(3px);max-width:360px;font-size:13px;line-height:1.65;
+    border:1px solid rgba(255,255,255,0.12);
+  }
+  #info h2{margin:0 0 8px 0;font-size:16px;color:#ffd84d;}
+  #status{margin-top:10px;font-size:14px;color:#9cf;font-weight:bold;min-height:20px;}
+
+  #menu{
+    position:fixed;top:14px;right:14px;z-index:10;user-select:none;
+    background:rgba(0,0,0,0.55);padding:14px 18px;border-radius:12px;
+    backdrop-filter:blur(3px);width:250px;font-size:13px;
+    border:1px solid rgba(255,255,255,0.12);
+  }
+  #menu h3{margin:0 0 10px 0;font-size:14px;color:#ffd84d;}
+  #menu .lbl{display:flex;justify-content:space-between;margin:8px 0 4px 0;}
+  #menu .lbl b{color:#9cf;}
+  #menu input[type=range]{
+    -webkit-appearance:none;appearance:none;width:100%;height:6px;
+    background:rgba(255,255,255,0.18);border-radius:4px;outline:none;cursor:pointer;
+  }
+  #menu input[type=range]::-webkit-slider-thumb{
+    -webkit-appearance:none;appearance:none;width:16px;height:16px;border-radius:50%;
+    background:#ffd84d;border:2px solid #1a1a1a;cursor:pointer;
+  }
+  #menu input[type=range]::-moz-range-thumb{
+    width:16px;height:16px;border-radius:50%;background:#ffd84d;border:2px solid #1a1a1a;cursor:pointer;
+  }
+  #menu .stats{margin-top:10px;padding-top:10px;border-top:1px solid rgba(255,255,255,0.15);font-size:12px;}
+  #menu .stats .row{display:flex;justify-content:space-between;margin:3px 0;opacity:0.9;}
+  #menu .stats .warn{color:#f86;font-weight:bold;}
+  .hint{opacity:0.75;font-size:11px;margin-top:6px;}
+
+  #VRButton{position:fixed !important;bottom:20px;left:50%;transform:translateX(-50%);z-index:11;}
+</style>
+</head>
+<body>
+
+<div id="info">
+  <h2>⚡ Pantograph 3D VR — Quest 3</h2>
+  <b>🖥️ Desktop:</b> drag the contact-strip with mouse · right-drag to orbit · wheel to zoom<br>
+  <b>🥽 VR (Quest 3):</b> press <b>Enter VR</b> below · reach out · <b>trigger / pinch</b> to grab the strip · pull down · release to spring-bounce<br>
+  <b>👋 Hands:</b> enable hand tracking in Quest settings → pinch to grab
+  <div id="status">— idle —</div>
+</div>
+
+<aside id="menu">
+  <h3>⚙️ Spark settings</h3>
+  <div class="lbl"><span>Max particles</span><b id="capVal">5000</b></div>
+  <input type="range" id="capSlider" min="0" max="50000" step="100" value="5000">
+  <div class="lbl" style="margin-top:12px;"><span>Spark size</span><b id="szVal">1.0×</b></div>
+  <input type="range" id="szSlider" min="0.3" max="3" step="0.1" value="1">
+  <div class="lbl" style="margin-top:12px;"><span>Spark density</span><b id="rateVal">1.0×</b></div>
+  <input type="range" id="rateSlider" min="0" max="3" step="0.1" value="1">
+  <div class="stats">
+    <div class="row"><span>Live particles:</span><b id="liveCount">0</b></div>
+    <div class="row"><span>FPS:</span><b id="fpsVal">—</b></div>
+    <div class="row" id="perfRow" style="display:none;"><span class="warn">⚠ High load</span><b></b></div>
+  </div>
+  <div class="hint">Quest 3 smooth at ~5000–10000. Higher = more lag.</div>
+</aside>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { VRButton } from 'three/addons/webxr/VRButton.js';
+import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
+import { XRHandModelFactory } from 'three/addons/webxr/XRHandModelFactory.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ============================================================
+// Renderer + WebXR (Quest 3: request local-floor + hand tracking)
+// ============================================================
+const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.xr.enabled = true;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+document.body.appendChild(renderer.domElement);
+
+const sessionInit = {
+  optionalFeatures: ['local-floor', 'bounded-floor', 'hand-tracking']
+};
+document.body.appendChild(VRButton.createButton(renderer, sessionInit));
+
+// ============================================================
+// Scene + camera
+// ============================================================
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0a1028);
+scene.fog = new THREE.Fog(0x0a1028, 12, 55);  // distance cull for Quest perf
+
+const camera = new THREE.PerspectiveCamera(72, window.innerWidth/window.innerHeight, 0.05, 200);
+camera.position.set(2.0, 1.6, 2.4);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 1.2, -1.0);
+controls.maxPolarAngle = Math.PI * 0.495;
+controls.minDistance = 1.5;
+controls.maxDistance = 12;
+controls.enablePan = false;
+controls.update();
+
+// ============================================================
+// Lighting (cheap for Quest)
+// ============================================================
+scene.add(new THREE.HemisphereLight(0xb0c4ff, 0x302010, 0.75));
+const dir = new THREE.DirectionalLight(0xffffff, 0.7);
+dir.position.set(5, 10, 3);
+scene.add(dir);
+
+// ============================================================
+// Environment: train roof + catenary wire + poles + stars
+// (local-floor: player stands on the roof at y=0)
+// ============================================================
+const ROOF_Y = 0;
+const WIRE_Y = 2.5;        // 2.5 m above roof — just above player's head
+const PANTO_Z = -1.5;      // pantograph 1.5 m in front of player (player at z=0, faces -Z)
+
+// roof
+const roof = new THREE.Mesh(
+  new THREE.BoxGeometry(6, 0.2, 60),
+  new THREE.MeshStandardMaterial({ color: 0x1a7a63, roughness: 0.85 })
+);
+roof.position.set(0, ROOF_Y - 0.1, 0);
+scene.add(roof);
+
+const roofEdge = new THREE.Mesh(
+  new THREE.BoxGeometry(6.05, 0.05, 60.05),
+  new THREE.MeshStandardMaterial({ color: 0x0f5a48 })
+);
+roofEdge.position.set(0, ROOF_Y - 0.02, 0);
+scene.add(roofEdge);
+
+// contact wire (along Z)
+const wire = new THREE.Mesh(
+  new THREE.CylinderGeometry(0.012, 0.012, 60, 6),
+  new THREE.MeshStandardMaterial({ color: 0xe0e0e0, emissive: 0x222222, roughness: 0.4 })
+);
+wire.rotation.x = Math.PI / 2;
+wire.position.set(0, WIRE_Y, 0);
+scene.add(wire);
+
+// catenary poles every 6 m
+const poleMat = new THREE.MeshStandardMaterial({ color: 0x4a4a4a, roughness: 0.7 });
+for (let z = -27; z <= 27; z += 6) {
+  const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.06, WIRE_Y, 6), poleMat);
+  pole.position.set(0.6, WIRE_Y / 2, z);
+  scene.add(pole);
+  const cant = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.04, 0.04), poleMat);
+  cant.position.set(0.3, WIRE_Y, z);
+  scene.add(cant);
+}
+
+// distant stars (cheap Points)
+{
+  const arr = [];
+  for (let i = 0; i < 300; i++) {
+    arr.push((Math.random() - 0.5) * 120, Math.random() * 30 + 5, (Math.random() - 0.5) * 120);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(arr, 3));
+  const stars = new THREE.Points(g, new THREE.PointsMaterial({
+    color: 0xffffff, size: 0.15, transparent: true, opacity: 0.7, depthWrite: false
+  }));
+  scene.add(stars);
+}
+
+// ============================================================
+// Pantograph rig (group placed at world z = PANTO_Z)
+// ============================================================
+const rig = new THREE.Group();
+rig.position.set(0, 0, PANTO_Z);
+scene.add(rig);
+
+const BASE_HALF = 0.4;       // half-distance between base supports (0.8 m span)
+const ARM_LEN = 1.4;         // 1.4 m arms — full extension reaches ~2 m
+const STRIP_OFFSET = 0.12;   // contact strip 12 cm above head node
+const STRIP_HALF = 0.5;      // half-length of contact strip (1 m wide)
+
+const metalMat = new THREE.MeshStandardMaterial({ color: 0x8a3326, roughness: 0.5, metalness: 0.4 });
+const jointMat = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.6 });
+const stripMat = new THREE.MeshStandardMaterial({
+  color: 0xe6c35a, emissive: 0x442200, emissiveIntensity: 0.4, roughness: 0.4
+});
+
+// base insulators
+function makeInsulator(x) {
+  const g = new THREE.Group();
+  const ins = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.06, 0.06, 0.1, 12),
+    new THREE.MeshStandardMaterial({ color: 0xdddddd, roughness: 0.6 })
+  );
+  ins.position.set(x, ROOF_Y + 0.05, 0);
+  g.add(ins);
+  for (let i = 0; i < 2; i++) {
+    const rib = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.07, 0.07, 0.015, 12),
+      new THREE.MeshStandardMaterial({ color: 0xbbbbbb })
+    );
+    rib.position.set(x, ROOF_Y + 0.04 + i * 0.03, 0);
+    g.add(rib);
+  }
+  return g;
+}
+rig.add(makeInsulator(-BASE_HALF));
+rig.add(makeInsulator(BASE_HALF));
+
+// arms (cylinders repositioned+oriented every frame)
+const armGeo = new THREE.CylinderGeometry(0.025, 0.025, 1, 8);
+const thinGeo = new THREE.CylinderGeometry(0.015, 0.015, 1, 6);
+function makeArm(geo) { return new THREE.Mesh(geo, metalMat); }
+const armLB = makeArm(armGeo);
+const armRB = makeArm(armGeo);
+const armLK = makeArm(armGeo);
+const armRK = makeArm(armGeo);
+const diagLR = makeArm(thinGeo);
+const diagRL = makeArm(thinGeo);
+rig.add(armLB, armRB, armLK, armRK, diagLR, diagRL);
+
+// joints
+const jointGeo = new THREE.SphereGeometry(0.04, 8, 6);
+const joints = {
+  kneeL: new THREE.Mesh(jointGeo, jointMat),
+  kneeR: new THREE.Mesh(jointGeo, jointMat),
+  apex: new THREE.Mesh(jointGeo, jointMat)
+};
+Object.values(joints).forEach(j => rig.add(j));
+
+// head group: contact strip + pulleys + grab hitbox + glow plane
+const headGroup = new THREE.Group();
+rig.add(headGroup);
+const stripMesh = new THREE.Mesh(new THREE.BoxGeometry(STRIP_HALF * 2, 0.04, 0.1), stripMat);
+headGroup.add(stripMesh);
+const capGeo = new THREE.CylinderGeometry(0.05, 0.05, 0.04, 10);
+const cap1 = new THREE.Mesh(capGeo, jointMat);
+cap1.rotation.x = Math.PI / 2;
+cap1.position.set(-STRIP_HALF, 0, 0);
+const cap2 = cap1.clone();
+cap2.position.set(STRIP_HALF, 0, 0);
+headGroup.add(cap1, cap2);
+
+// invisible grab hitbox (large enough for forgiving grab in VR)
+const grabHitbox = new THREE.Mesh(
+  new THREE.BoxGeometry(STRIP_HALF * 2.5, 0.3, 0.4),
+  new THREE.MeshBasicMaterial({ visible: false })
+);
+grabHitbox.userData.grabbable = true;
+headGroup.add(grabHitbox);
+
+// glow plane for contact visual
+const glowMat = new THREE.MeshBasicMaterial({
+  color: 0xffdd88, transparent: true, opacity: 0,
+  blending: THREE.AdditiveBlending, depthWrite: false
+});
+const glow = new THREE.Mesh(new THREE.PlaneGeometry(2, 0.4), glowMat);
+glow.position.y = 0.05;
+headGroup.add(glow);
+
+// ============================================================
+// Kinematics helper (2D in XY plane)
+// ============================================================
+function circleIntersectY(b, a, rB, rA, side) {
+  const dx = a.x - b.x, dy = a.y - b.y;
+  const d = Math.sqrt(dx * dx + dy * dy);
+  if (d <= 0.0001 || d > rB + rA || d < Math.abs(rB - rA)) {
+    return { x: b.x + side * 0.5, y: (b.y + a.y) / 2 };
+  }
+  const aDist = (rB * rB - rA * rA + d * d) / (2 * d);
+  const h = Math.sqrt(Math.max(0, rB * rB - aDist * aDist));
+  const xm = b.x + aDist * dx / d, ym = b.y + aDist * dy / d;
+  const perpX = -dy / d, perpY = dx / d;
+  const p1 = { x: xm + h * perpX, y: ym + h * perpY };
+  const p2 = { x: xm - h * perpX, y: ym - h * perpY };
+  return side > 0 ? (p1.x > p2.x ? p1 : p2) : (p1.x < p2.x ? p1 : p2);
+}
+
+const _v = new THREE.Vector3();
+const _up = new THREE.Vector3(0, 1, 0);
+function placeArm(mesh, p1, p2) {
+  _v.set(p2.x - p1.x, p2.y - p1.y, 0);
+  const len = _v.length();
+  mesh.position.set((p1.x + p2.x) / 2, (p1.y + p2.y) / 2, 0);
+  mesh.scale.set(1, len, 1);
+  _v.normalize();
+  mesh.quaternion.setFromUnitVectors(_up, _v);
+}
+
+// ============================================================
+// Physics state (meters, not pixels)
+// ============================================================
+let extension = 0;
+let extVelocity = 0;
+let controlMode = 'idle';
+let springTarget = 0;
+let flashAlpha = 0;
+let currentGap = 0;
+let contactState = 'none';
+let currentIntensity = 0;
+
+const EXT_ACCEL = 3.0;
+const EXT_MAXSPEED = 3.0;
+const EXT_FRICTION = 0.88;
+const SPARK_ZONE = 0.25;       // 25 cm spark zone
+
+const SPRING_K = 8.0;          // spring stiffness (pulls toward wire)
+const SPRING_C = 0.55;         // light damping → bouncy
+const BOUNCE = 0.55;           // restitution on wire impact
+const SETTLE_V = 0.05;
+const SETTLE_X = 0.01;
+
+function maxExtension() { return WIRE_Y - STRIP_OFFSET - ROOF_Y; }
+function minExtension() { return 0.05; }
+extension = maxExtension() * 0.45;
+
+// ============================================================
+// Sparks: THREE.Points with circular buffer (Quest 3 friendly)
+// ============================================================
+const HARD_CAP = 50000;        // pre-allocated buffer (memory: ~2.4 MB)
+let MAX_PARTICLES = 5000;
+let SPARK_SIZE_MUL = 1.0;
+let SPARK_RATE_MUL = 1.0;
+
+const sparkPositions = new Float32Array(HARD_CAP * 3);
+const sparkColors = new Float32Array(HARD_CAP * 3);
+const sparkData = [];
+for (let i = 0; i < HARD_CAP; i++) {
+  sparkData.push({ vx: 0, vy: 0, vz: 0, life: 1, maxLife: 1, active: false });
+  sparkPositions[i * 3 + 1] = -1000;  // park far away
+}
+
+const sparkGeo = new THREE.BufferGeometry();
+sparkGeo.setAttribute('position', new THREE.BufferAttribute(sparkPositions, 3));
+sparkGeo.setAttribute('color', new THREE.BufferAttribute(sparkColors, 3));
+sparkGeo.setDrawRange(0, MAX_PARTICLES);
+
+const sparkMat = new THREE.PointsMaterial({
+  size: 0.08, vertexColors: true, transparent: true, opacity: 1.0,
+  blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true
+});
+
+const sparks = new THREE.Points(sparkGeo, sparkMat);
+sparks.frustumCulled = false;  // we manage positions manually
+scene.add(sparks);
+
+let nextSparkIdx = 0;
+
+function setSparkColor(idx, r) {
+  if (r < 0.55) { sparkColors[idx*3]=1; sparkColors[idx*3+1]=1; sparkColors[idx*3+2]=1; }
+  else if (r < 0.8) { sparkColors[idx*3]=1; sparkColors[idx*3+1]=0.84; sparkColors[idx*3+2]=0.35; }
+  else { sparkColors[idx*3]=0.55; sparkColors[idx*3+1]=0.82; sparkColors[idx*3+2]=1; }
+}
+
+function spawnSpark(x, y, z, power) {
+  if (MAX_PARTICLES <= 0) return;
+  const count = Math.ceil((5 + power * 14 * Math.random()) * SPARK_RATE_MUL);
+  for (let i = 0; i < count; i++) {
+    const idx = nextSparkIdx;
+    nextSparkIdx = (nextSparkIdx + 1) % MAX_PARTICLES;
+    const p = sparkData[idx];
+    p.active = true; p.life = 0;
+    p.maxLife = 0.3 + Math.random() * 0.5;
+    const ang = (Math.random() - 0.5) * Math.PI * 1.4 - Math.PI / 2;
+    const spd = (1.8 + Math.random() * 3.8) * power;
+    sparkPositions[idx*3]   = x + (Math.random() - 0.5) * 0.1;
+    sparkPositions[idx*3+1] = y + (Math.random() - 0.5) * 0.06;
+    sparkPositions[idx*3+2] = z + (Math.random() - 0.5) * 0.1;
+    p.vx = Math.cos(ang) * spd + (Math.random() - 0.5) * 1.2 * power;
+    p.vy = Math.sin(ang) * spd - Math.random() * 0.6 * power;
+    p.vz = (Math.random() - 0.5) * spd;
+    setSparkColor(idx, Math.random());
+  }
+}
+
+function spawnBounceBurst(x, y, z, power) {
+  if (MAX_PARTICLES <= 0) return;
+  const count = Math.ceil((18 + power * 30) * SPARK_RATE_MUL);
+  for (let i = 0; i < count; i++) {
+    const idx = nextSparkIdx;
+    nextSparkIdx = (nextSparkIdx + 1) % MAX_PARTICLES;
+    const p = sparkData[idx];
+    p.active = true; p.life = 0;
+    p.maxLife = 0.4 + Math.random() * 0.6;
+    const theta = Math.random() * Math.PI * 2;
+    const phi = Math.acos(2 * Math.random() - 1);
+    const spd = (2 + Math.random() * 5.2) * (0.6 + power * 0.6);
+    sparkPositions[idx*3]   = x + (Math.random() - 0.5) * 0.16;
+    sparkPositions[idx*3+1] = y;
+    sparkPositions[idx*3+2] = z + (Math.random() - 0.5) * 0.1;
+    p.vx = Math.sin(phi) * Math.cos(theta) * spd;
+    p.vy = Math.cos(phi) * spd - Math.random() * 1.2;
+    p.vz = Math.sin(phi) * Math.sin(theta) * spd;
+    setSparkColor(idx, Math.random());
+  }
+  flashAlpha = Math.min(0.75, 0.25 + power * 0.45);
+}
+
+let activeSparkCount = 0;
+function updateSparks(dt) {
+  let active = 0;
+  for (let i = 0; i < MAX_PARTICLES; i++) {
+    const p = sparkData[i];
+    if (!p.active) continue;
+    p.vy -= 6.5 * dt;              // gravity (m/s²)
+    p.vx *= (1 - 0.6 * dt);
+    p.vz *= (1 - 0.6 * dt);
+    sparkPositions[i*3]   += p.vx * dt;
+    sparkPositions[i*3+1] += p.vy * dt;
+    sparkPositions[i*3+2] += p.vz * dt;
+    p.life += dt;
+    if (p.life >= p.maxLife) {
+      p.active = false;
+      sparkPositions[i*3+1] = -1000;
+    } else {
+      active++;
+    }
+  }
+  activeSparkCount = active;
+  sparkGeo.attributes.position.needsUpdate = true;
+  sparkGeo.attributes.color.needsUpdate = true;
+}
+
+// ============================================================
+// Update pantograph pose + physics
+// ============================================================
+function updatePantograph() {
+  const headY = ROOF_Y + extension;
+  const stripY = headY + STRIP_OFFSET;
+  const baseLeft = { x: -BASE_HALF, y: ROOF_Y };
+  const baseRight = { x: BASE_HALF, y: ROOF_Y };
+  const apex = { x: 0, y: headY };
+  const kneeR = circleIntersectY(baseRight, apex, ARM_LEN, ARM_LEN, +1);
+  const kneeL = circleIntersectY(baseLeft, apex, ARM_LEN, ARM_LEN, -1);
+  placeArm(armLB, baseLeft, kneeL);
+  placeArm(armRB, baseRight, kneeR);
+  placeArm(armLK, kneeL, apex);
+  placeArm(armRK, kneeR, apex);
+  placeArm(diagLR, baseLeft, kneeR);
+  placeArm(diagRL, baseRight, kneeL);
+  joints.kneeL.position.set(kneeL.x, kneeL.y, 0);
+  joints.kneeR.position.set(kneeR.x, kneeR.y, 0);
+  joints.apex.position.set(0, headY, 0);
+  headGroup.position.set(0, stripY, 0);
+  return { headY, stripY };
+}
+
+function update(dt) {
+  const maxE = maxExtension(), minE = minExtension();
+
+  if (controlMode === 'dragging') {
+    extVelocity = 0;
+  } else if (controlMode === 'springing') {
+    const force = -SPRING_K * (extension - springTarget);
+    extVelocity += force * dt;
+    extVelocity -= SPRING_C * extVelocity * dt;
+    extension += extVelocity * dt;
+    if (extension > maxE) {
+      extension = maxE;
+      if (extVelocity > 0.3) {
+        const impact = Math.min(1.4, extVelocity / 3);
+        spawnBounceBurst(0, WIRE_Y, PANTO_Z, impact);
+      }
+      extVelocity = -extVelocity * BOUNCE;
+    }
+    if (Math.abs(extVelocity) < SETTLE_V && Math.abs(extension - springTarget) < SETTLE_X) {
+      extension = springTarget;
+      extVelocity = 0;
+      controlMode = 'idle';
+    }
+  } else {
+    // keyboard
+    if (keys['ArrowUp'] || keys['KeyW']) extVelocity += EXT_ACCEL * dt;
+    else if (keys['ArrowDown'] || keys['KeyS']) extVelocity -= EXT_ACCEL * dt;
+    else extVelocity *= EXT_FRICTION;
+    extVelocity = Math.max(-EXT_MAXSPEED, Math.min(EXT_MAXSPEED, extVelocity));
+    extension += extVelocity * dt;
+    if (extension < minE) { extension = minE; extVelocity = 0; }
+    if (extension > maxE) { extension = maxE; extVelocity = 0; }
+  }
+
+  if (flashAlpha > 0) flashAlpha = Math.max(0, flashAlpha - dt * 1.6);
+
+  const { stripY } = updatePantograph();
+  currentGap = Math.max(0, WIRE_Y - stripY);
+
+  if (currentGap <= 0.005) {
+    contactState = 'contact';
+    currentIntensity = 0.55;
+    if (Math.random() < 0.55) spawnSpark(0, WIRE_Y, PANTO_Z, 0.65);
+    if (Math.random() < 0.35) spawnSpark((Math.random() - 0.5) * 0.6, WIRE_Y, PANTO_Z, 0.5);
+  } else if (currentGap <= SPARK_ZONE) {
+    contactState = 'spark';
+    currentIntensity = 1 - currentGap / SPARK_ZONE;
+    if (Math.random() < 0.3 + currentIntensity * 0.7)
+      spawnSpark((Math.random() - 0.5) * 0.4, (stripY + WIRE_Y) / 2, PANTO_Z, 0.45 + currentIntensity * 0.8);
+  } else {
+    contactState = 'none';
+    currentIntensity = 0;
+  }
+
+  glowMat.opacity = contactState !== 'none' ? (0.4 + currentIntensity * 0.5) : 0;
+  updateSparks(dt);
+}
+
+// ============================================================
+// Keyboard
+// ============================================================
+const keys = {};
+window.addEventListener('keydown', e => {
+  if (['ArrowUp', 'ArrowDown', 'KeyW', 'KeyS', 'Space'].includes(e.code)) e.preventDefault();
+  keys[e.code] = true;
+  if (e.code === 'Space' && controlMode !== 'dragging') {
+    controlMode = 'idle';
+    extension = maxExtension() * 0.5;
+    extVelocity = 0;
+  }
+});
+window.addEventListener('keyup', e => { keys[e.code] = false; });
+
+// Auto-trigger: start the pantograph right at the wire so the user sees sparks immediately.
+// First frame = contact, sparks fly on load.
+extension = maxExtension() - 0.001;
+extVelocity = 0;
+for (let i = 0; i < 3; i++) spawnSpark(0, WIRE_Y, PANTO_Z, 0.6);
+
+// ============================================================
+// Desktop mouse drag on head (raycast onto plane z = PANTO_Z)
+// ============================================================
+const raycaster = new THREE.Raycaster();
+const mouse = new THREE.Vector2();
+let mouseDragging = false;
+const dragPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), -PANTO_Z);
+const dragHit = new THREE.Vector3();
+
+renderer.domElement.addEventListener('pointerdown', e => {
+  if (e.button !== 0) return;
+  mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+  mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+  raycaster.setFromCamera(mouse, camera);
+  const hits = raycaster.intersectObject(grabHitbox, false);
+  if (hits.length > 0) {
+    mouseDragging = true;
+    controlMode = 'dragging';
+    controls.enabled = false;
+    e.preventDefault();
+  }
+});
+window.addEventListener('pointermove', e => {
+  if (!mouseDragging) return;
+  mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+  mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+  raycaster.setFromCamera(mouse, camera);
+  if (raycaster.ray.intersectPlane(dragPlane, dragHit)) {
+    let ext = dragHit.y - STRIP_OFFSET - ROOF_Y;
+    ext = Math.max(minExtension(), Math.min(maxExtension(), ext));
+    extension = ext;
+  }
+});
+window.addEventListener('pointerup', () => {
+  if (mouseDragging) {
+    mouseDragging = false;
+    controlMode = 'springing';
+    springTarget = maxExtension();
+    controls.enabled = true;
+  }
+});
+
+// ============================================================
+// VR controllers + hands
+// ============================================================
+const controllerFactory = new XRControllerModelFactory();
+const handFactory = new XRHandModelFactory();
+const interactors = [];   // controllers + hands share the same grab interface
+
+function buildInteractor(source, kind) {
+  source.userData = { kind, grabbing: false };
+  source.addEventListener('selectstart', () => onGrabDown(source));
+  source.addEventListener('selectend', () => onGrabUp(source));
+  interactors.push(source);
+  scene.add(source);
+}
+
+for (let i = 0; i < 2; i++) {
+  // controller
+  const ctrl = renderer.xr.getController(i);
+  const grip = renderer.xr.getControllerGrip(i);
+  grip.add(controllerFactory.createControllerModel(grip));
+  scene.add(grip);
+  // ray line for visual feedback
+  const lineGeo = new THREE.BufferGeometry().setFromPoints([
+    new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -0.6)
+  ]);
+  const line = new THREE.Line(lineGeo, new THREE.LineBasicMaterial({
+    color: 0xffffff, transparent: true, opacity: 0.5
+  }));
+  ctrl.add(line);
+  buildInteractor(ctrl, 'controller');
+
+  // hand (auto-shown when hand tracking active & controllers down)
+  const hand = renderer.xr.getHand(i);
+  hand.add(handFactory.createHandModel(hand, 'mesh'));
+  buildInteractor(hand, 'hand');
+}
+
+function onGrabDown(src) {
+  // grab if within 0.4 m of head (forgiving)
+  const headWorld = new THREE.Vector3();
+  headGroup.getWorldPosition(headWorld);
+  const srcWorld = new THREE.Vector3();
+  src.getWorldPosition(srcWorld);
+  if (srcWorld.distanceTo(headWorld) < 0.5) {
+    src.userData.grabbing = true;
+    controlMode = 'dragging';
+  }
+}
+function onGrabUp(src) {
+  if (src.userData.grabbing) {
+    src.userData.grabbing = false;
+    controlMode = 'springing';
+    springTarget = maxExtension();
+  }
+}
+
+function updateVRGrab() {
+  if (controlMode !== 'dragging' || !renderer.xr.isPresenting) return;
+  const grabber = interactors.find(s => s.userData.grabbing);
+  if (!grabber) return;
+  const srcWorld = new THREE.Vector3();
+  grabber.getWorldPosition(srcWorld);
+  let ext = srcWorld.y - STRIP_OFFSET - ROOF_Y;
+  ext = Math.max(minExtension(), Math.min(maxExtension(), ext));
+  extension = ext;
+}
+
+// ============================================================
+// HUD + settings UI
+// ============================================================
+const statusEl = document.getElementById('status');
+const liveCountEl = document.getElementById('liveCount');
+const fpsValEl = document.getElementById('fpsVal');
+const perfRowEl = document.getElementById('perfRow');
+const capSlider = document.getElementById('capSlider');
+const capValEl = document.getElementById('capVal');
+const szSlider = document.getElementById('szSlider');
+const szValEl = document.getElementById('szVal');
+const rateSlider = document.getElementById('rateSlider');
+const rateValEl = document.getElementById('rateVal');
+
+capSlider.addEventListener('input', e => {
+  MAX_PARTICLES = parseInt(e.target.value, 10);
+  capValEl.textContent = MAX_PARTICLES === 0 ? 'OFF' : MAX_PARTICLES.toLocaleString();
+  sparkGeo.setDrawRange(0, MAX_PARTICLES);
+  // deactivate particles above the new cap
+  for (let i = MAX_PARTICLES; i < HARD_CAP; i++) {
+    sparkData[i].active = false;
+    sparkPositions[i * 3 + 1] = -1000;
+  }
+  sparkGeo.attributes.position.needsUpdate = true;
+  sparkGeo.attributes.color.needsUpdate = true;
+});
+szSlider.addEventListener('input', e => {
+  SPARK_SIZE_MUL = parseFloat(e.target.value);
+  szValEl.textContent = SPARK_SIZE_MUL.toFixed(1) + '×';
+  sparkMat.size = 0.08 * SPARK_SIZE_MUL;
+});
+rateSlider.addEventListener('input', e => {
+  SPARK_RATE_MUL = parseFloat(e.target.value);
+  rateValEl.textContent = SPARK_RATE_MUL.toFixed(1) + '×';
+});
+
+let frameCount = 0, fpsAccum = 0;
+function updateHUD(dt) {
+  let msg = '— idle —';
+  if (controlMode === 'dragging') msg = '🖱️/✋ GRABBING — pull down';
+  else if (controlMode === 'springing') msg = '🌀 SPRING BOUNCE…';
+  else if (contactState === 'contact') msg = '✅ STABLE CONTACT';
+  else if (contactState === 'spark') msg = '⚡ ARCING';
+  statusEl.textContent = msg;
+
+  frameCount++;
+  fpsAccum += dt;
+  if (fpsAccum >= 0.5) {
+    const fps = Math.round(frameCount / fpsAccum);
+    fpsValEl.textContent = fps;
+    liveCountEl.textContent = activeSparkCount.toLocaleString();
+    perfRowEl.style.display = (fps < 40 || activeSparkCount > 30000) ? 'flex' : 'none';
+    frameCount = 0; fpsAccum = 0;
+  }
+}
+
+// Hide desktop UI when in VR
+renderer.xr.addEventListener('sessionstart', () => {
+  document.getElementById('info').style.display = 'none';
+  document.getElementById('menu').style.display = 'none';
+});
+renderer.xr.addEventListener('sessionend', () => {
+  document.getElementById('info').style.display = 'block';
+  document.getElementById('menu').style.display = 'block';
+});
+
+// ============================================================
+// Render loop (setAnimationLoop works for both desktop + XR)
+// ============================================================
+let lastTime = performance.now();
+function animate() {
+  const now = performance.now();
+  const dt = Math.min(0.05, (now - lastTime) / 1000);
+  lastTime = now;
+  updateVRGrab();
+  update(dt);
+  updateHUD(dt);
+  controls.update();
+  renderer.render(scene, camera);
+}
+renderer.setAnimationLoop(animate);
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+</script>
+</body>
+</html>
